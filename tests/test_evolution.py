@@ -1,5 +1,6 @@
 import numpy as np
 
+from stonkfly.evolution import __main__ as evolution_cli
 from stonkfly.evolution.experiment import LearnedMemory
 from stonkfly.evolution.fitness import score_equity_curve
 from stonkfly.evolution.genome import Genome
@@ -58,3 +59,34 @@ def test_memory_fingerprint_is_stable_and_sensitive():
     c = LearnedMemory(np.array([1.0]), np.array([3.0]))
     assert a.fingerprint() == b.fingerprint()
     assert a.fingerprint() != c.fingerprint()
+
+def test_two_individual_cli_uses_one_elite(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run_evolution(**kwargs):
+        calls.append(kwargs)
+        return {
+            "fingerprint": "test",
+            "fitness": {"score": 0.0},
+            "genome": Genome().to_dict(),
+        }
+
+    monkeypatch.setattr(evolution_cli, "run_evolution", fake_run_evolution)
+    evolution_cli.main(
+        [
+            "--inheritance",
+            "both",
+            "--population",
+            "2",
+            "--generations",
+            "2",
+            "--steps",
+            "6",
+            "--out",
+            str(tmp_path),
+        ]
+    )
+
+    assert [call["inheritance"] for call in calls] == ["darwinian", "lamarckian"]
+    assert [call["elite_count"] for call in calls] == [1, 1]
+

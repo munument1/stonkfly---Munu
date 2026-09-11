@@ -8,12 +8,13 @@ from .experiment import run_evolution
 
 
 def _run_mode(a, mode: str, out: Path):
+    elite_count = min(2, a.population - 1) if a.elite is None else a.elite
     return run_evolution(
         out=out,
         population_size=a.population,
         generations=a.generations,
         steps=a.steps,
-        elite_count=a.elite,
+        elite_count=elite_count,
         mutation_sigma=a.mutation_sigma,
         seed=a.seed,
         product=a.product,
@@ -40,7 +41,12 @@ def main(argv=None):
         default=6,
         help="Market observations per individual; with --replay, 0 uses the full recording",
     )
-    p.add_argument("--elite", type=int, default=2)
+    p.add_argument(
+        "--elite",
+        type=int,
+        default=None,
+        help="Elites retained per generation; defaults to min(2, population - 1)",
+    )
     p.add_argument("--mutation-sigma", type=float, default=0.15)
     p.add_argument("--seed", type=int, default=7)
     p.add_argument(
