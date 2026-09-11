@@ -291,6 +291,16 @@ def _write_progress(out: Path, **values) -> None:
     _write_json(path, progress)
 
 
+def _replay_schedule(count: int, generations: int, seed: int):
+    if count < 1:
+        return []
+    schedule_rng = np.random.default_rng(seed ^ 0x5F3759DF)
+    schedule = []
+    while len(schedule) < generations:
+        schedule.extend(int(index) for index in schedule_rng.permutation(count))
+    return schedule[:generations]
+
+
 def run_evolution(
     *,
     out: Path,
@@ -306,6 +316,7 @@ def run_evolution(
     paper_fee: float,
     reward_deadband: str,
     replay_path: Path | None = None,
+    replay_paths=None,
     inheritance: str = "darwinian",
     overwrite: bool = False,
 ):
@@ -318,24 +329,41 @@ def run_evolution(
     if inheritance not in ("darwinian", "lamarckian"):
         raise ValueError("inheritance must be darwinian or lamarckian")
 
+    if replay_path is not None and replay_paths is not None:
+        raise ValueError("use replay_path or replay_paths, not both")
+    resolved_replays = (
+        [Path(path) for path in replay_paths]
+        if replay_paths is not None
+        else ([Path(replay_path)] if replay_path is not None else [])
+    )
+    if replay_paths is not None and not resolved_replays:
+        raise ValueError("replay_paths must not be empty")
+
     market_config: dict
-    if replay_path is not None:
-        replay_path = Path(replay_path)
-        info = recording_info(replay_path)
-        if info["product"] != product:
-            raise ValueError(
-                f"replay contains {info['product']} but experiment requested {product}"
-            )
-        if steps == 0:
-            steps = info["observations"]
-        if steps < 2 or steps > info["observations"]:
-            raise ValueError(
-                f"steps must be 2..{info['observations']} for this replay, or 0 for all"
-            )
+    replay_infos = []
+    replay_schedule = []
+    if resolved_replays:
+        replay_infos = [recording_info(path) for path in resolved_replays]
+        for path, info in zip(resolved_replays, replay_infos):
+            if info["product"] != product:
+                raise ValueError(
+                    f"replay {path} contains {info['product']} but experiment "
+                    f"requested {product}"
+                )
+            if steps != 0 and (steps < 2 or steps > info["observations"]):
+                raise ValueError(
+                    f"steps must be 2..{info['observations']} for replay {path}, "
+                    "or 0 for all"
+                )
+        replay_schedule = _replay_schedule(len(resolved_replays), generations, seed)
         market_config = {
-            "source": "coinbase-public-recording",
-            "path": str(replay_path),
-            **info,
+            "source": "coinbase-public-recordings",
+            "schedule": "seeded-shuffle-per-cycle",
+            "recordings": [
+                {"path": str(path), **info}
+                for path, info in zip(resolved_replays, replay_infos)
+            ],
+            "generation_replay_indexes": replay_schedule,
         }
     else:
         if steps < 2:
@@ -387,6 +415,23 @@ def run_evolution(
 
     best_overall = None
     for generation in range(generations):
+        if resolved_replays:
+            replay_index = replay_schedule[generation]
+            generation_replay = resolved_replays[replay_index]
+            generation_info = replay_infos[replay_index]
+            generation_steps = (
+                generation_info["observations"] if steps == 0 else steps
+            )
+            generation_market = {
+                "replay_index": replay_index,
+                "path": str(generation_replay),
+                "sha256": generation_info["sha256"],
+                "observations": generation_steps,
+            }
+        else:
+            generation_replay = None
+            generation_steps = steps
+            generation_market = {"source": "synthetic-fixture"}
         ranked = []
         for index, individual in enumerate(population):
             _write_progress(
@@ -396,16 +441,17 @@ def run_evolution(
                 completed_generations=generation,
                 current_individual=index,
                 completed_individuals=index,
+                market=generation_market,
             )
             result, learned = _evaluate_individual(
                 individual,
                 product=product,
-                steps=steps,
+                steps=generation_steps,
                 neural_ms=neural_ms,
                 order_usdc=order_usdc,
                 paper_fee=paper_fee,
                 reward_deadband=reward_deadband,
-                replay_path=replay_path,
+                replay_path=generation_replay,
             )
             result["generation"] = generation
             result["index"] = index
@@ -441,6 +487,7 @@ def run_evolution(
         payload = {
             "generation": generation,
             "inheritance": inheritance,
+            "market": generation_market,
             "ranked": public_ranked,
         }
         _write_json(out / f"generation-{generation:04d}.json", payload)
