@@ -1,4 +1,6 @@
+import ast
 import json
+from pathlib import Path
 
 import numpy as np
 
@@ -186,4 +188,49 @@ def test_fitness_sorting_and_elite_preservation(monkeypatch, tmp_path):
     second = json.loads((out / "generation-0001.json").read_text())["ranked"]
     assert [row["fitness"]["score"] for row in first] == [3.0, 2.0, 1.0]
     assert second[0]["genome"] == first[0]["genome"]
+
+def test_inheritance_modes_reset_or_deep_copy_memory(monkeypatch, tmp_path):
+    import stonkfly.evolution.experiment as experiment
+    seen = {"darwinian": [], "lamarckian": []}
+    active_mode = None
+
+    def fake_evaluate(individual: Individual, **kwargs):
+        seen[active_mode].append(individual)
+        learned = LearnedMemory(np.array([1.0]), np.array([2.0]))
+        return ({
+            "genome": individual.genome.to_dict(),
+            "fingerprint": individual.genome.fingerprint(),
+            "fitness": {"score": 1.0, "return_pct": 0.0, "max_drawdown_pct": 0.0, "trade_count": 0},
+            "memory_inherited": individual.inherited_memory is not None,
+        }, learned)
+
+    monkeypatch.setattr(experiment, "_evaluate_individual", fake_evaluate)
+    for mode in seen:
+        active_mode = mode
+        experiment.run_evolution(
+            out=tmp_path / mode, population_size=2, generations=2, steps=2,
+            elite_count=1, mutation_sigma=0.15, seed=5, product="BTC-USDC",
+            neural_ms=1, order_usdc=10, paper_fee=0.006,
+            reward_deadband="0.01", inheritance=mode,
+        )
+
+    assert all(individual.inherited_memory is None for individual in seen["darwinian"])
+    inherited = [individual.inherited_memory for individual in seen["lamarckian"][2:]]
+    assert all(memory is not None for memory in inherited)
+    assert not np.shares_memory(inherited[0].memory_u, inherited[1].memory_u)
+    assert not np.shares_memory(inherited[0].memory_w, inherited[1].memory_w)
+
+
+def test_evolution_package_has_no_live_execution_imports():
+    import stonkfly.evolution.experiment as experiment
+
+    blocked = {"actions", "broker"}
+    for path in Path(experiment.__file__).parent.glob("*.py"):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                assert all(not alias.name.startswith("coinbase_agentkit") for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                assert not (node.level >= 2 and node.module in blocked)
+                assert not (node.module or "").startswith("coinbase_agentkit")
 
