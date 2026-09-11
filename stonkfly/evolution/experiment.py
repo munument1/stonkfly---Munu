@@ -15,6 +15,7 @@ from ..neural.visual import VisualMemoryBrain
 from ..reinforcement import reinforcement
 from .fitness import score_equity_curve
 from .genome import Genome
+from .replay import ReplayMarket, recording_info
 
 
 class EvolutionController:
@@ -123,10 +124,15 @@ def evaluate_genome(
     order_usdc: float,
     paper_fee: float,
     reward_deadband: str,
+    replay_path: Path | None = None,
 ):
     """Evaluate one genome against the same deterministic market sequence."""
 
-    market = FixtureMarket((product,))
+    market = (
+        ReplayMarket(replay_path, product=product)
+        if replay_path is not None
+        else FixtureMarket((product,))
+    )
     controller = EvolutionController(genome, neural_ms)
     account = PaperAccount(order_usdc=order_usdc, fee_rate=paper_fee)
     anchor = 100.0
@@ -178,14 +184,40 @@ def run_evolution(
     order_usdc: float,
     paper_fee: float,
     reward_deadband: str,
+    replay_path: Path | None = None,
     overwrite: bool = False,
 ):
     if population_size < 2:
         raise ValueError("population_size must be at least 2")
-    if generations < 1 or steps < 2:
-        raise ValueError("need at least one generation and two market steps")
+    if generations < 1:
+        raise ValueError("need at least one generation")
     if not 1 <= elite_count < population_size:
         raise ValueError("elite_count must be between 1 and population_size - 1")
+
+    market_config: dict
+    if replay_path is not None:
+        replay_path = Path(replay_path)
+        info = recording_info(replay_path)
+        if info["product"] != product:
+            raise ValueError(
+                f"replay contains {info['product']} but experiment requested {product}"
+            )
+        if steps == 0:
+            steps = info["observations"]
+        if steps < 2 or steps > info["observations"]:
+            raise ValueError(
+                f"steps must be 2..{info['observations']} for this replay, or 0 for all"
+            )
+        market_config = {
+            "source": "coinbase-public-recording",
+            "path": str(replay_path),
+            **info,
+        }
+    else:
+        if steps < 2:
+            raise ValueError("synthetic fixture needs at least two market steps")
+        market_config = {"source": "synthetic-fixture"}
+
     if out.exists() and any(out.iterdir()) and not overwrite:
         raise FileExistsError(f"{out} is not empty; pass --overwrite or choose another path")
     out.mkdir(parents=True, exist_ok=True)
@@ -202,7 +234,7 @@ def run_evolution(
         "order_usdc": order_usdc,
         "paper_fee": paper_fee,
         "reward_deadband": reward_deadband,
-        "market": "synthetic-fixture",
+        "market": market_config,
         "network_execution": False,
         "inheritance": "darwinian-parameters-only",
     }
@@ -226,6 +258,7 @@ def run_evolution(
                 order_usdc=order_usdc,
                 paper_fee=paper_fee,
                 reward_deadband=reward_deadband,
+                replay_path=replay_path,
             )
             result["generation"] = generation
             result["index"] = index

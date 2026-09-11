@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import json
 from pathlib import Path
 
@@ -15,7 +14,12 @@ def main(argv=None):
     )
     p.add_argument("--population", type=int, default=4)
     p.add_argument("--generations", type=int, default=1)
-    p.add_argument("--steps", type=int, default=6)
+    p.add_argument(
+        "--steps",
+        type=int,
+        default=6,
+        help="Market observations per individual; with --replay, 0 uses the full recording",
+    )
     p.add_argument("--elite", type=int, default=2)
     p.add_argument("--mutation-sigma", type=float, default=0.15)
     p.add_argument("--seed", type=int, default=7)
@@ -28,6 +32,11 @@ def main(argv=None):
     p.add_argument("--order-usdc", type=float, default=10.0)
     p.add_argument("--paper-fee", type=float, default=0.006)
     p.add_argument("--reward-deadband", default="0.01")
+    p.add_argument(
+        "--replay",
+        type=Path,
+        help="Recorded Coinbase-public JSONL. No credentials or live orders are used.",
+    )
     p.add_argument("--out", type=Path, default=Path("runs/evolution"))
     p.add_argument("--overwrite", action="store_true")
     a = p.parse_args(argv)
@@ -45,6 +54,7 @@ def main(argv=None):
         order_usdc=a.order_usdc,
         paper_fee=a.paper_fee,
         reward_deadband=a.reward_deadband,
+        replay_path=a.replay,
         overwrite=a.overwrite,
     )
     print(
