@@ -22,7 +22,7 @@ def _run_mode(a, mode: str, out: Path):
         order_usdc=a.order_usdc,
         paper_fee=a.paper_fee,
         reward_deadband=a.reward_deadband,
-        replay_path=a.replay,
+        replay_paths=a.replay,
         inheritance=mode,
         overwrite=a.overwrite,
     )
@@ -61,7 +61,11 @@ def main(argv=None):
     p.add_argument(
         "--replay",
         type=Path,
-        help="Recorded Coinbase-public JSONL. No credentials or live orders are used.",
+        action="append",
+        help=(
+            "Recorded Coinbase-public JSONL. Repeat for multiple training windows; "
+            "one window is shared by every individual in each generation."
+        ),
     )
     p.add_argument(
         "--inheritance",
