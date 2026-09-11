@@ -234,3 +234,60 @@ def test_evolution_package_has_no_live_execution_imports():
                 assert not (node.level >= 2 and node.module in blocked)
                 assert not (node.module or "").startswith("coinbase_agentkit")
 
+
+
+def test_multiple_replays_are_shared_within_generation(monkeypatch, tmp_path):
+    import stonkfly.evolution.experiment as experiment
+
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    seen = []
+
+    def fake_recording_info(path):
+        return {
+            "format": "test",
+            "product": "BTC-USDC",
+            "observations": 3 if path == first else 4,
+            "sha256": path.stem,
+        }
+
+    def fake_evaluate(individual: Individual, **kwargs):
+        seen.append((kwargs["replay_path"], kwargs["steps"]))
+        learned = LearnedMemory(np.zeros(1), np.zeros(1))
+        return ({
+            "genome": individual.genome.to_dict(),
+            "fingerprint": individual.genome.fingerprint(),
+            "fitness": {
+                "score": 1.0,
+                "return_pct": 0.0,
+                "max_drawdown_pct": 0.0,
+                "trade_count": 0,
+            },
+            "memory_inherited": False,
+        }, learned)
+
+    monkeypatch.setattr(experiment, "recording_info", fake_recording_info)
+    monkeypatch.setattr(experiment, "_evaluate_individual", fake_evaluate)
+    out = tmp_path / "multi"
+    experiment.run_evolution(
+        out=out,
+        population_size=2,
+        generations=2,
+        steps=0,
+        elite_count=1,
+        mutation_sigma=0.15,
+        seed=9,
+        product="BTC-USDC",
+        neural_ms=1,
+        order_usdc=10,
+        paper_fee=0.006,
+        reward_deadband="0.01",
+        replay_paths=[first, second],
+    )
+
+    assert seen[0] == seen[1]
+    assert seen[2] == seen[3]
+    assert {seen[0], seen[2]} == {(first, 3), (second, 4)}
+    first_payload = json.loads((out / "generation-0000.json").read_text())
+    second_payload = json.loads((out / "generation-0001.json").read_text())
+    assert first_payload["market"]["path"] != second_payload["market"]["path"]
