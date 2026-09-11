@@ -20,6 +20,20 @@ stonkfly prepare
 stonkfly verify
 ```
 
+## Check the machine before the first run
+
+```bash
+python -m stonkfly.evolution.doctor
+```
+
+To validate a Coinbase-public recording at the same time:
+
+```bash
+python -m stonkfly.evolution.doctor --replay recordings/btc-60m.jsonl
+```
+
+The doctor checks Python version, availability of a C++ compiler, checksum-verified MaleCNS data, and the optional replay file. On native Windows it emits a warning because the upstream neural kernel build currently uses Unix-style `c++`, `-fPIC`, and `.so` conventions. **WSL2/Linux is recommended for the first end-to-end run.**
+
 ## Run a tiny synthetic assay
 
 Start small because every individual runs the full connectome simulation:
@@ -31,6 +45,18 @@ python -m stonkfly.evolution \
   --steps 6 \
   --neural-ms 100 \
   --out runs/evolution-demo
+```
+
+For the very first smoke test, reduce the cost further:
+
+```bash
+python -m stonkfly.evolution \
+  --inheritance both \
+  --population 2 \
+  --generations 2 \
+  --steps 6 \
+  --neural-ms 50 \
+  --out runs/smoke
 ```
 
 Results are written as:
