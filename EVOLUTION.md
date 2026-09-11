@@ -153,6 +153,31 @@ python -m stonkfly.evolution \
 
 This runs Darwinian and Lamarckian populations with the same seed and market recording into separate subdirectories, making the comparison reproducible.
 
+## Profitability validation gate
+
+Evolution results are not evidence of profitability until a champion succeeds on chronological data that was never used for selection. Split a sufficiently long recording without shuffling:
+
+```bash
+python -m stonkfly.evolution.dataset \
+  --replay recordings/btc-long.jsonl \
+  --out recordings/btc-long-split
+```
+
+Use only `train.jsonl` for evolution. Keep `validation.jsonl` for model and parameter decisions, and keep `test.jsonl` untouched until the final decision. The split files carry only historical context preceding their own period.
+
+Validate a completed champion against at least three independent out-of-sample recordings:
+
+```bash
+python -m stonkfly.evolution.validate \
+  --run runs/trained \
+  --replay recordings/holdout-day-1.jsonl \
+  --replay recordings/holdout-day-2.jsonl \
+  --replay recordings/holdout-day-3.jsonl \
+  --out runs/trained/validation.json
+```
+
+The report compares each champion with HOLD, seeded random trading, and a simple momentum baseline under the same paper-account fee model. It reports mean, median, worst-window return, positive-window count, and drawdown. Fewer than three independent windows are marked as insufficient for generalization. Passing this gate still does not authorize live trading.
+
 ## Fitness
 
 The MVP score is:
