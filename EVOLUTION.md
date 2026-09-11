@@ -62,8 +62,23 @@ python -m stonkfly.evolution \
 Results are written as:
 
 - `config.json`
+- `progress.json` (atomically refreshed during every individual evaluation)
 - `generation-0000.json`, `generation-0001.json`, ...
 - `champion.json`
+
+## Monitor a long-running evolution
+
+The local monitor is designed for runs lasting hundreds or thousands of generations. It polls atomic progress files, plots completed generations, shows the individual currently being evaluated, and down-samples long histories for the browser without changing the saved experiment data.
+
+Start it in a second terminal while evolution is running:
+
+```bash
+python -m stonkfly.evolution.dashboard \
+  --run runs/evolution-demo \
+  --open
+```
+
+Then keep `http://127.0.0.1:8765/` open. The page refreshes automatically every 2.5 seconds. A matched `--inheritance both` run is detected automatically and gets separate Darwinian and Lamarckian views. The server binds only to localhost by default.
 
 ## Record Coinbase public market observations
 
