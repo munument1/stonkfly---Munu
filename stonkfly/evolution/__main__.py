@@ -7,6 +7,26 @@ from pathlib import Path
 from .experiment import run_evolution
 
 
+def _run_mode(a, mode: str, out: Path):
+    return run_evolution(
+        out=out,
+        population_size=a.population,
+        generations=a.generations,
+        steps=a.steps,
+        elite_count=a.elite,
+        mutation_sigma=a.mutation_sigma,
+        seed=a.seed,
+        product=a.product,
+        neural_ms=a.neural_ms,
+        order_usdc=a.order_usdc,
+        paper_fee=a.paper_fee,
+        reward_deadband=a.reward_deadband,
+        replay_path=a.replay,
+        inheritance=mode,
+        overwrite=a.overwrite,
+    )
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(
         prog="python -m stonkfly.evolution",
@@ -37,29 +57,44 @@ def main(argv=None):
         type=Path,
         help="Recorded Coinbase-public JSONL. No credentials or live orders are used.",
     )
+    p.add_argument(
+        "--inheritance",
+        choices=["darwinian", "lamarckian", "both"],
+        default="darwinian",
+        help="Heritable physiology only, acquired KC/MBON memory too, or a matched comparison.",
+    )
     p.add_argument("--out", type=Path, default=Path("runs/evolution"))
     p.add_argument("--overwrite", action="store_true")
     a = p.parse_args(argv)
 
-    champion = run_evolution(
-        out=a.out,
-        population_size=a.population,
-        generations=a.generations,
-        steps=a.steps,
-        elite_count=a.elite,
-        mutation_sigma=a.mutation_sigma,
-        seed=a.seed,
-        product=a.product,
-        neural_ms=a.neural_ms,
-        order_usdc=a.order_usdc,
-        paper_fee=a.paper_fee,
-        reward_deadband=a.reward_deadband,
-        replay_path=a.replay,
-        overwrite=a.overwrite,
-    )
+    if a.inheritance == "both":
+        champions = {
+            mode: _run_mode(a, mode, a.out / mode)
+            for mode in ("darwinian", "lamarckian")
+        }
+        print(
+            json.dumps(
+                {
+                    "comparison": {
+                        mode: {
+                            "champion": row["fingerprint"],
+                            "fitness": row["fitness"],
+                            "genome": row["genome"],
+                        }
+                        for mode, row in champions.items()
+                    },
+                    "out": str(a.out),
+                },
+                indent=2,
+            )
+        )
+        return
+
+    champion = _run_mode(a, a.inheritance, a.out)
     print(
         json.dumps(
             {
+                "inheritance": a.inheritance,
                 "champion": champion["fingerprint"],
                 "fitness": champion["fitness"],
                 "genome": champion["genome"],
