@@ -4,6 +4,7 @@ import dataclasses
 import hashlib
 import json
 import math
+import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -270,6 +271,26 @@ def _public_row(row):
     return {k: v for k, v in row.items() if not k.startswith("_")}
 
 
+def _write_json(path: Path, payload) -> None:
+    temporary = path.with_suffix(path.suffix + ".partial")
+    temporary.write_text(json.dumps(payload, indent=2) + "\n")
+    temporary.replace(path)
+
+
+def _write_progress(out: Path, **values) -> None:
+    path = out / "progress.json"
+    progress = {}
+    if path.exists():
+        try:
+            progress = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+    progress.update(values)
+    progress["pid"] = os.getpid()
+    progress["updated_at_unix"] = time.time()
+    _write_json(path, progress)
+
+
 def run_evolution(
     *,
     out: Path,
@@ -346,7 +367,17 @@ def run_evolution(
             else None
         ),
     }
-    (out / "config.json").write_text(json.dumps(config, indent=2) + "\n")
+    _write_json(out / "config.json", config)
+    _write_progress(
+        out,
+        status="running",
+        inheritance=inheritance,
+        completed_generations=0,
+        total_generations=generations,
+        current_generation=0,
+        completed_individuals=0,
+        total_individuals=population_size,
+    )
 
     rng = np.random.default_rng(seed)
     baseline = Genome()
@@ -358,6 +389,14 @@ def run_evolution(
     for generation in range(generations):
         ranked = []
         for index, individual in enumerate(population):
+            _write_progress(
+                out,
+                status="running",
+                current_generation=generation,
+                completed_generations=generation,
+                current_individual=index,
+                completed_individuals=index,
+            )
             result, learned = _evaluate_individual(
                 individual,
                 product=product,
@@ -372,6 +411,17 @@ def run_evolution(
             result["index"] = index
             result["_learned_memory"] = learned
             ranked.append(result)
+            _write_progress(
+                out,
+                current_generation=generation,
+                current_individual=index,
+                completed_individuals=index + 1,
+                latest={
+                    "fingerprint": result["fingerprint"],
+                    "score": result["fitness"]["score"],
+                    "return_pct": result["fitness"]["return_pct"],
+                },
+            )
             print(
                 json.dumps(
                     {
@@ -393,14 +443,29 @@ def run_evolution(
             "inheritance": inheritance,
             "ranked": public_ranked,
         }
-        (out / f"generation-{generation:04d}.json").write_text(
-            json.dumps(payload, indent=2) + "\n"
-        )
+        _write_json(out / f"generation-{generation:04d}.json", payload)
         if (
             best_overall is None
             or ranked[0]["fitness"]["score"] > best_overall["fitness"]["score"]
         ):
             best_overall = _public_row(ranked[0])
+
+        _write_progress(
+            out,
+            completed_generations=generation + 1,
+            current_generation=(
+                generation + 1 if generation + 1 < generations else generation
+            ),
+            current_individual=None,
+            completed_individuals=(
+                0 if generation + 1 < generations else population_size
+            ),
+            best={
+                "fingerprint": best_overall["fingerprint"],
+                "score": best_overall["fitness"]["score"],
+                "return_pct": best_overall["fitness"]["return_pct"],
+            },
+        )
 
         if generation + 1 < generations:
             parents = ranked[:elite_count]
@@ -425,5 +490,6 @@ def run_evolution(
                 next_population.append(Individual(child, seed_memory))
             population = next_population
 
-    (out / "champion.json").write_text(json.dumps(best_overall, indent=2) + "\n")
+    _write_json(out / "champion.json", best_overall)
+    _write_progress(out, status="completed", current_individual=None)
     return best_overall
