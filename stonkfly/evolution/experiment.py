@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import math
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -18,10 +20,53 @@ from .genome import Genome
 from .replay import ReplayMarket, recording_info
 
 
+@dataclass(frozen=True)
+class LearnedMemory:
+    """Acquired KC/MBON memory state eligible for Lamarckian inheritance."""
+
+    memory_u: np.ndarray
+    memory_w: np.ndarray
+
+    @classmethod
+    def from_brain(cls, brain) -> "LearnedMemory":
+        return cls(brain.memory_u.copy(), brain.memory_w.copy())
+
+    def apply(self, brain) -> None:
+        if (
+            self.memory_u.shape != brain.memory_u.shape
+            or self.memory_w.shape != brain.memory_w.shape
+            or not np.isfinite(self.memory_u).all()
+            or not np.isfinite(self.memory_w).all()
+        ):
+            raise ValueError("Inherited memory is incompatible with this connectome")
+        brain.memory_u[:] = self.memory_u
+        brain.memory_w[:] = self.memory_w
+        brain.weight[brain.circuit["edges"]] = brain.baseline_plastic * (
+            1 + brain.memory_w
+        )
+
+    def fingerprint(self) -> str:
+        h = hashlib.sha256()
+        h.update(self.memory_u.tobytes())
+        h.update(self.memory_w.tobytes())
+        return h.hexdigest()
+
+
+@dataclass(frozen=True)
+class Individual:
+    genome: Genome
+    inherited_memory: LearnedMemory | None = None
+
+
 class EvolutionController:
     """Full connectome controller with heritable physiology parameters."""
 
-    def __init__(self, genome: Genome, neural_ms: float):
+    def __init__(
+        self,
+        genome: Genome,
+        neural_ms: float,
+        inherited_memory: LearnedMemory | None = None,
+    ):
         if not math.isfinite(neural_ms) or neural_ms <= 0:
             raise ValueError("neural_ms must be positive and finite")
         self.genome = genome
@@ -34,6 +79,8 @@ class EvolutionController:
             adaptation_jump=genome.adaptation_jump,
             adaptation_tau=genome.adaptation_tau,
         )
+        if inherited_memory is not None:
+            inherited_memory.apply(self.brain)
         self.decoder = Decoder(
             self.brain.ids,
             annotations(self.brain.ids),
@@ -115,8 +162,8 @@ class PaperAccount:
         return True
 
 
-def evaluate_genome(
-    genome: Genome,
+def _evaluate_individual(
+    individual: Individual,
     *,
     product: str,
     steps: int,
@@ -126,14 +173,18 @@ def evaluate_genome(
     reward_deadband: str,
     replay_path: Path | None = None,
 ):
-    """Evaluate one genome against the same deterministic market sequence."""
+    """Evaluate one individual and return its acquired memory separately."""
 
     market = (
         ReplayMarket(replay_path, product=product)
         if replay_path is not None
         else FixtureMarket((product,))
     )
-    controller = EvolutionController(genome, neural_ms)
+    controller = EvolutionController(
+        individual.genome,
+        neural_ms,
+        inherited_memory=individual.inherited_memory,
+    )
     account = PaperAccount(order_usdc=order_usdc, fee_rate=paper_fee)
     anchor = 100.0
     equity_curve = [anchor]
@@ -159,15 +210,51 @@ def evaluate_genome(
     if last_quote is None:
         raise RuntimeError("evaluation produced no market observations")
     fitness = score_equity_curve(equity_curve, account.trade_count)
-    return {
-        "genome": genome.to_dict(),
-        "fingerprint": genome.fingerprint(),
-        "fitness": dataclasses.asdict(fitness),
-        "final_equity": equity_curve[-1],
-        "reward_events": reward_events,
-        "aversive_events": aversive_events,
-        "memory": controller.brain.memory(),
-    }
+    learned = LearnedMemory.from_brain(controller.brain)
+    return (
+        {
+            "genome": individual.genome.to_dict(),
+            "fingerprint": individual.genome.fingerprint(),
+            "fitness": dataclasses.asdict(fitness),
+            "final_equity": equity_curve[-1],
+            "reward_events": reward_events,
+            "aversive_events": aversive_events,
+            "memory_inherited": individual.inherited_memory is not None,
+            "learned_memory_sha256": learned.fingerprint(),
+            "memory": controller.brain.memory(),
+        },
+        learned,
+    )
+
+
+def evaluate_genome(
+    genome: Genome,
+    *,
+    product: str,
+    steps: int,
+    neural_ms: float,
+    order_usdc: float,
+    paper_fee: float,
+    reward_deadband: str,
+    replay_path: Path | None = None,
+):
+    """Backward-compatible one-off evaluation with no inherited memory."""
+
+    result, _ = _evaluate_individual(
+        Individual(genome),
+        product=product,
+        steps=steps,
+        neural_ms=neural_ms,
+        order_usdc=order_usdc,
+        paper_fee=paper_fee,
+        reward_deadband=reward_deadband,
+        replay_path=replay_path,
+    )
+    return result
+
+
+def _public_row(row):
+    return {k: v for k, v in row.items() if not k.startswith("_")}
 
 
 def run_evolution(
@@ -185,6 +272,7 @@ def run_evolution(
     paper_fee: float,
     reward_deadband: str,
     replay_path: Path | None = None,
+    inheritance: str = "darwinian",
     overwrite: bool = False,
 ):
     if population_size < 2:
@@ -193,6 +281,8 @@ def run_evolution(
         raise ValueError("need at least one generation")
     if not 1 <= elite_count < population_size:
         raise ValueError("elite_count must be between 1 and population_size - 1")
+    if inheritance not in ("darwinian", "lamarckian"):
+        raise ValueError("inheritance must be darwinian or lamarckian")
 
     market_config: dict
     if replay_path is not None:
@@ -236,22 +326,27 @@ def run_evolution(
         "reward_deadband": reward_deadband,
         "market": market_config,
         "network_execution": False,
-        "inheritance": "darwinian-parameters-only",
+        "inheritance": inheritance,
+        "lamarckian_scope": (
+            "memory_u/memory_w only; transient membrane/spike/rate state is reset"
+            if inheritance == "lamarckian"
+            else None
+        ),
     }
     (out / "config.json").write_text(json.dumps(config, indent=2) + "\n")
 
     rng = np.random.default_rng(seed)
     baseline = Genome()
-    population = [baseline]
+    population = [Individual(baseline)]
     while len(population) < population_size:
-        population.append(baseline.mutate(rng, mutation_sigma))
+        population.append(Individual(baseline.mutate(rng, mutation_sigma)))
 
     best_overall = None
     for generation in range(generations):
         ranked = []
-        for index, genome in enumerate(population):
-            result = evaluate_genome(
-                genome,
+        for index, individual in enumerate(population):
+            result, learned = _evaluate_individual(
+                individual,
                 product=product,
                 steps=steps,
                 neural_ms=neural_ms,
@@ -262,6 +357,7 @@ def run_evolution(
             )
             result["generation"] = generation
             result["index"] = index
+            result["_learned_memory"] = learned
             ranked.append(result)
             print(
                 json.dumps(
@@ -271,25 +367,45 @@ def run_evolution(
                         "fingerprint": result["fingerprint"],
                         "score": result["fitness"]["score"],
                         "return_pct": result["fitness"]["return_pct"],
+                        "memory_inherited": result["memory_inherited"],
                     }
                 ),
                 flush=True,
             )
 
         ranked.sort(key=lambda row: row["fitness"]["score"], reverse=True)
-        payload = {"generation": generation, "ranked": ranked}
+        public_ranked = [_public_row(row) for row in ranked]
+        payload = {
+            "generation": generation,
+            "inheritance": inheritance,
+            "ranked": public_ranked,
+        }
         (out / f"generation-{generation:04d}.json").write_text(
             json.dumps(payload, indent=2) + "\n"
         )
-        if best_overall is None or ranked[0]["fitness"]["score"] > best_overall["fitness"]["score"]:
-            best_overall = ranked[0]
+        if (
+            best_overall is None
+            or ranked[0]["fitness"]["score"] > best_overall["fitness"]["score"]
+        ):
+            best_overall = _public_row(ranked[0])
 
         if generation + 1 < generations:
-            elites = [Genome(**row["genome"]) for row in ranked[:elite_count]]
-            next_population = list(elites)
+            parents = ranked[:elite_count]
+            next_population = []
+            for row in parents:
+                seed_memory = (
+                    row["_learned_memory"] if inheritance == "lamarckian" else None
+                )
+                next_population.append(
+                    Individual(Genome(**row["genome"]), seed_memory)
+                )
             while len(next_population) < population_size:
-                parent = elites[int(rng.integers(0, len(elites)))]
-                next_population.append(parent.mutate(rng, mutation_sigma))
+                row = parents[int(rng.integers(0, len(parents)))]
+                child = Genome(**row["genome"]).mutate(rng, mutation_sigma)
+                seed_memory = (
+                    row["_learned_memory"] if inheritance == "lamarckian" else None
+                )
+                next_population.append(Individual(child, seed_memory))
             population = next_population
 
     (out / "champion.json").write_text(json.dumps(best_overall, indent=2) + "\n")
