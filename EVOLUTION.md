@@ -32,7 +32,7 @@ To validate a Coinbase-public recording at the same time:
 python -m stonkfly.evolution.doctor --replay recordings/btc-60m.jsonl
 ```
 
-The doctor checks Python version, availability of a C++ compiler, checksum-verified MaleCNS data, and the optional replay file. On native Windows it emits a warning because the upstream neural kernel build currently uses Unix-style `c++`, `-fPIC`, and `.so` conventions. **WSL2/Linux is recommended for the first end-to-end run.**
+The doctor checks Python version, availability of a C++ compiler, checksum-verified MaleCNS data, and the optional replay file. The compiler command honors the standard `CXX` environment variable, including multiword commands such as `CXX="zig c++"`. On native Windows it emits a warning because the upstream neural kernel build currently uses Unix-style `c++`, `-fPIC`, and `.so` conventions. **WSL2/Linux is recommended for the first end-to-end run.**
 
 ## Run a tiny synthetic assay
 

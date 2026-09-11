@@ -1,7 +1,9 @@
 import json
 from pathlib import Path
 
-from stonkfly.evolution.replay import FORMAT, ReplayMarket, recording_info
+import pytest
+
+from stonkfly.evolution.replay import FORMAT, ReplayMarket, load_recording, recording_info
 
 
 def _write_recording(path: Path):
@@ -79,3 +81,39 @@ def test_replay_rejects_wrong_product(tmp_path):
         assert "replay product" in str(exc)
     else:
         raise AssertionError("wrong replay product should fail")
+
+def test_replay_rejects_corrupted_tick_sequence(tmp_path):
+    path = tmp_path / "market.jsonl"
+    _write_recording(path)
+    rows = path.read_text().splitlines()
+    payload = json.loads(rows[2])
+    payload["tick"] = 7
+    rows[2] = json.dumps(payload)
+    path.write_text("\n".join(rows) + "\n")
+    with pytest.raises(ValueError, match="tick sequence"):
+        load_recording(path)
+
+
+def test_replay_rejects_nonfinite_history(tmp_path):
+    path = tmp_path / "market.jsonl"
+    _write_recording(path)
+    rows = path.read_text().splitlines()
+    header = json.loads(rows[0])
+    header["initial_history"][0] = float("nan")
+    rows[0] = json.dumps(header)
+    path.write_text("\n".join(rows) + "\n")
+    with pytest.raises(ValueError, match="initial market history"):
+        load_recording(path)
+
+
+def test_replay_rejects_nonincreasing_timestamps(tmp_path):
+    path = tmp_path / "market.jsonl"
+    _write_recording(path)
+    rows = path.read_text().splitlines()
+    payload = json.loads(rows[2])
+    payload["quote"]["timestamp"] = 10.0
+    rows[2] = json.dumps(payload)
+    path.write_text("\n".join(rows) + "\n")
+    with pytest.raises(ValueError, match="timestamps"):
+        load_recording(path)
+

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from pathlib import Path
 
 from ..config import D
@@ -52,10 +53,11 @@ def load_recording(path: Path):
     if not isinstance(history, list) or len(history) < 2:
         raise ValueError("recording lacks initial market history")
     history = [float(v) for v in history]
-    if any(v <= 0 for v in history):
+    if any(not math.isfinite(v) or v <= 0 for v in history):
         raise ValueError("invalid initial market history")
 
     quotes = []
+    previous_timestamp = None
     for expected_tick, line in enumerate(lines[1:]):
         row = json.loads(line)
         if row.get("tick") != expected_tick or set(row) != {"tick", "quote"}:
@@ -63,6 +65,9 @@ def load_recording(path: Path):
         quote = _decode_quote(row["quote"])
         if quote.product != product:
             raise ValueError("recording contains a different product")
+        if previous_timestamp is not None and quote.timestamp <= previous_timestamp:
+            raise ValueError("recording timestamps must increase")
+        previous_timestamp = quote.timestamp
         quotes.append(quote)
     return {**header, "initial_history": history}, quotes
 

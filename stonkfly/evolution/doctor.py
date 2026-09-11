@@ -5,10 +5,12 @@ import json
 import os
 import platform
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
 from ..data import verify
+from ..neural.brain import compiler_command
 from .replay import recording_info
 
 
@@ -35,15 +37,26 @@ def run_doctor(replay: Path | None = None):
     else:
         rows.append(_result("platform", "ok", platform.platform()))
 
-    compilers = [name for name in ("c++", "g++", "clang++") if shutil.which(name)]
-    if compilers:
-        rows.append(_result("cxx", "ok", ", ".join(compilers)))
-    else:
+    try:
+        compiler = compiler_command()
+        executable = shutil.which(compiler[0])
+        if executable is None:
+            raise FileNotFoundError(f"{compiler[0]} is not on PATH")
+        probe = subprocess.run(
+            [*compiler, "--version"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        version = (probe.stdout or probe.stderr).splitlines()[0]
+        rows.append(_result("cxx", "ok", f"{' '.join(compiler)}: {version}"))
+    except Exception as exc:
         rows.append(
             _result(
                 "cxx",
                 "fail",
-                "No c++/g++/clang++ executable found on PATH; the native neural kernel cannot build.",
+                f"{type(exc).__name__}: {exc}; set CXX to a working C++17 compiler command.",
             )
         )
 

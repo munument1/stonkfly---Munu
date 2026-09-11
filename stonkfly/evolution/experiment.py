@@ -4,11 +4,13 @@ import dataclasses
 import hashlib
 import json
 import math
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
 
+from ..config import D
 from ..display import market_frame
 from ..market import FixtureMarket
 from ..neural.common import annotations
@@ -30,6 +32,9 @@ class LearnedMemory:
     @classmethod
     def from_brain(cls, brain) -> "LearnedMemory":
         return cls(brain.memory_u.copy(), brain.memory_w.copy())
+
+    def copy(self) -> "LearnedMemory":
+        return LearnedMemory(self.memory_u.copy(), self.memory_w.copy())
 
     def apply(self, brain) -> None:
         if (
@@ -122,24 +127,27 @@ class PaperAccount:
     """Small deterministic assay account; never talks to Coinbase or AgentKit."""
 
     def __init__(self, capital=100.0, order_usdc=10.0, fee_rate=0.006):
+        capital = D(capital)
+        order_usdc = D(order_usdc)
+        fee_rate = D(fee_rate)
         if not 0 < order_usdc <= capital:
             raise ValueError("order_usdc must be within assay capital")
-        if not 0 <= fee_rate <= 0.05:
+        if not 0 <= fee_rate <= D("0.05"):
             raise ValueError("invalid paper fee")
-        self.cash = float(capital)
-        self.position = 0.0
-        self.order_usdc = float(order_usdc)
-        self.fee_rate = float(fee_rate)
+        self.cash = capital
+        self.position = D(0)
+        self.order_usdc = order_usdc
+        self.fee_rate = fee_rate
         self.trade_count = 0
 
-    def equity(self, quote) -> float:
-        return self.cash + self.position * float(quote.bid)
+    def equity(self, quote):
+        return self.cash + self.position * quote.bid
 
     def trade(self, side: str, quote) -> bool:
         if side == "HOLD":
             return False
         if side == "BUY":
-            ask = float(quote.ask)
+            ask = quote.ask
             notional = min(self.order_usdc, self.cash / (1.0 + self.fee_rate))
             if notional <= 0:
                 return False
@@ -148,7 +156,7 @@ class PaperAccount:
             self.cash -= notional + fee
             self.position += base
         elif side == "SELL":
-            bid = float(quote.bid)
+            bid = quote.bid
             base = min(self.position, self.order_usdc / bid)
             if base <= 0:
                 return False
@@ -175,6 +183,7 @@ def _evaluate_individual(
 ):
     """Evaluate one individual and return its acquired memory separately."""
 
+    started = time.perf_counter()
     market = (
         ReplayMarket(replay_path, product=product)
         if replay_path is not None
@@ -186,8 +195,9 @@ def _evaluate_individual(
         inherited_memory=individual.inherited_memory,
     )
     account = PaperAccount(order_usdc=order_usdc, fee_rate=paper_fee)
-    anchor = 100.0
+    anchor = D("100")
     equity_curve = [anchor]
+    market_input = hashlib.sha256()
     reward_events = 0
     aversive_events = 0
     last_quote = None
@@ -202,6 +212,7 @@ def _evaluate_individual(
         reward_events += int(kind == "reward")
         aversive_events += int(kind == "aversive")
         frame = market_frame(product, market.history[product], quote.bid, quote.ask)
+        market_input.update(frame.tobytes())
         neural = controller.observe(frame, kind)
         anchor = before
         account.trade(neural["side"], quote)
@@ -216,7 +227,9 @@ def _evaluate_individual(
             "genome": individual.genome.to_dict(),
             "fingerprint": individual.genome.fingerprint(),
             "fitness": dataclasses.asdict(fitness),
-            "final_equity": equity_curve[-1],
+            "final_equity": float(equity_curve[-1]),
+            "evaluation_seconds": time.perf_counter() - started,
+            "market_input_sha256": market_input.hexdigest(),
             "reward_events": reward_events,
             "aversive_events": aversive_events,
             "memory_inherited": individual.inherited_memory is not None,
@@ -394,7 +407,9 @@ def run_evolution(
             next_population = []
             for row in parents:
                 seed_memory = (
-                    row["_learned_memory"] if inheritance == "lamarckian" else None
+                    row["_learned_memory"].copy()
+                    if inheritance == "lamarckian"
+                    else None
                 )
                 next_population.append(
                     Individual(Genome(**row["genome"]), seed_memory)
@@ -403,7 +418,9 @@ def run_evolution(
                 row = parents[int(rng.integers(0, len(parents)))]
                 child = Genome(**row["genome"]).mutate(rng, mutation_sigma)
                 seed_memory = (
-                    row["_learned_memory"] if inheritance == "lamarckian" else None
+                    row["_learned_memory"].copy()
+                    if inheritance == "lamarckian"
+                    else None
                 )
                 next_population.append(Individual(child, seed_memory))
             population = next_population
