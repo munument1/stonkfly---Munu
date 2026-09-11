@@ -148,7 +148,7 @@ class PaperAccount:
             return False
         if side == "BUY":
             ask = quote.ask
-            notional = min(self.order_usdc, self.cash / (1.0 + self.fee_rate))
+            notional = min(self.order_usdc, self.cash / (D(1) + self.fee_rate))
             if notional <= 0:
                 return False
             base = notional / ask

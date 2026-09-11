@@ -147,6 +147,7 @@ def test_same_seed_produces_same_initial_genomes(monkeypatch, tmp_path):
             "genome": individual.genome.to_dict(),
             "fingerprint": individual.genome.fingerprint(),
             "fitness": {"score": score, "return_pct": 0.0, "max_drawdown_pct": 0.0, "trade_count": 0},
+            "memory_inherited": individual.inherited_memory is not None,
         }, learned)
 
     monkeypatch.setattr(experiment, "_evaluate_individual", fake_evaluate)
@@ -171,6 +172,7 @@ def test_fitness_sorting_and_elite_preservation(monkeypatch, tmp_path):
             "genome": individual.genome.to_dict(),
             "fingerprint": individual.genome.fingerprint(),
             "fitness": {"score": score, "return_pct": 0.0, "max_drawdown_pct": 0.0, "trade_count": 0},
+            "memory_inherited": individual.inherited_memory is not None,
         }, learned)
 
     monkeypatch.setattr(experiment, "_evaluate_individual", fake_evaluate)
