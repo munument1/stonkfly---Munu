@@ -70,24 +70,40 @@ def _mode_directories(run: Path):
     return result
 
 
-def build_snapshot(run: Path, max_points: int = 2500):
+def build_snapshot(run: Path, max_points: int = 2500, cache=None):
+    cache = {} if cache is None else cache
     modes = {}
     for mode, path in _mode_directories(run):
         config = _read_json(path / "config.json") or {}
         progress = _read_json(path / "progress.json") or {}
         summaries = []
         latest = []
-        for generation_path in sorted(path.glob("generation-*.json")):
-            payload = _read_json(generation_path)
-            if not isinstance(payload, dict):
-                continue
+        generation_paths = sorted(path.glob("generation-*.json"))
+        for position, generation_path in enumerate(generation_paths):
             try:
-                summary = _generation_summary(payload)
-            except (KeyError, TypeError, ValueError):
+                stat = generation_path.stat()
+            except OSError:
                 continue
+            cache_key = str(generation_path.resolve())
+            cached = cache.get(cache_key)
+            payload = None
+            if cached and cached[:2] == (stat.st_mtime_ns, stat.st_size):
+                summary = cached[2]
+            else:
+                payload = _read_json(generation_path)
+                if not isinstance(payload, dict):
+                    continue
+                try:
+                    summary = _generation_summary(payload)
+                except (KeyError, TypeError, ValueError):
+                    continue
+                cache[cache_key] = (stat.st_mtime_ns, stat.st_size, summary)
             if summary is not None:
                 summaries.append(summary)
-                latest = payload.get("ranked", [])[:20]
+                if position == len(generation_paths) - 1:
+                    payload = payload or _read_json(generation_path)
+                    if isinstance(payload, dict):
+                        latest = payload.get("ranked", [])[:20]
         champion = _read_json(path / "champion.json")
         if not progress:
             progress = {
@@ -132,6 +148,8 @@ function refreshButtons(){document.querySelectorAll('[data-mode]').forEach(b=>b.
 
 
 def _handler(run: Path, max_points: int):
+    cache = {}
+
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             path = urlparse(self.path).path
@@ -139,7 +157,7 @@ def _handler(run: Path, max_points: int):
                 body = HTML.encode()
                 content_type = "text/html; charset=utf-8"
             elif path == "/api/snapshot":
-                body = json.dumps(build_snapshot(run, max_points)).encode()
+                body = json.dumps(build_snapshot(run, max_points, cache)).encode()
                 content_type = "application/json; charset=utf-8"
             else:
                 self.send_error(HTTPStatus.NOT_FOUND)
