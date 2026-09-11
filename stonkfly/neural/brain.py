@@ -4,6 +4,8 @@ import ctypes as C
 import hashlib
 import json
 import math
+import os
+import shlex
 import subprocess
 import sys
 import time
@@ -33,13 +35,22 @@ PARAMETERS = {
 }
 
 
+def compiler_command() -> list[str]:
+    command = shlex.split(os.environ.get("CXX", "c++"))
+    if not command:
+        raise RuntimeError("CXX must name a C++ compiler")
+    return command
+
+
 def build():
     sha = hashlib.sha256(SOURCE.read_bytes()).hexdigest()
+    compiler = compiler_command()
     metadata = LIBRARY.with_suffix(LIBRARY.suffix + ".json")
     if LIBRARY.exists() and metadata.exists():
         record = json.loads(metadata.read_text())
         if (
             record["source_sha256"] == sha
+            and record.get("compiler") == compiler
             and record["binary_sha256"]
             == hashlib.sha256(LIBRARY.read_bytes()).hexdigest()
         ):
@@ -47,12 +58,13 @@ def build():
     LIBRARY.parent.mkdir(parents=True, exist_ok=True)
     temp = LIBRARY.with_suffix(LIBRARY.suffix + ".partial")
     subprocess.run(
-        ["c++", "-O3", "-std=c++17", "-shared", "-fPIC", str(SOURCE), "-o", str(temp)],
+        [*compiler, "-O3", "-std=c++17", "-shared", "-fPIC", str(SOURCE), "-o", str(temp)],
         check=True,
     )
     temp.replace(LIBRARY)
     record = {
         "model": MODEL,
+        "compiler": compiler,
         "source_sha256": sha,
         "binary_sha256": hashlib.sha256(LIBRARY.read_bytes()).hexdigest(),
         "flags": ["-O3", "-std=c++17", "-shared", "-fPIC"],

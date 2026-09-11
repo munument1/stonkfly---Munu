@@ -4,6 +4,7 @@
 !.env.example
 data/
 runs/
+recordings/
 *.key
 *.pem
 *.npz

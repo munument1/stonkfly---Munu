@@ -1,0 +1,293 @@
+import ast
+import json
+from pathlib import Path
+
+import numpy as np
+
+from stonkfly.config import D
+from stonkfly.evolution import __main__ as evolution_cli
+from stonkfly.evolution.experiment import Individual, LearnedMemory, PaperAccount
+from stonkfly.evolution.fitness import score_equity_curve
+from stonkfly.evolution.genome import Genome
+from stonkfly.market import Quote
+
+
+def test_mutation_is_seeded_and_bounded():
+    a = Genome().mutate(np.random.default_rng(123), 0.2)
+    b = Genome().mutate(np.random.default_rng(123), 0.2)
+    assert a == b
+    assert a != Genome()
+    for key, (lo, hi) in Genome.BOUNDS.items():
+        assert lo <= getattr(a, key) <= hi
+
+
+def test_fitness_rewards_return_and_penalizes_drawdown():
+    smooth = score_equity_curve([100, 101, 102], 2)
+    rough = score_equity_curve([100, 90, 102], 2)
+    assert smooth.return_pct == rough.return_pct
+    assert smooth.score > rough.score
+    assert rough.max_drawdown_pct > 0
+
+
+def test_trade_count_penalty_breaks_equal_equity_ties():
+    quiet = score_equity_curve([100, 101], 1)
+    churn = score_equity_curve([100, 101], 10)
+    assert quiet.score > churn.score
+
+
+def test_lamarckian_memory_seed_applies_only_memory_arrays():
+    class Brain:
+        def __init__(self):
+            self.memory_u = np.zeros(3, dtype=np.float64)
+            self.memory_w = np.zeros(3, dtype=np.float64)
+            self.baseline_plastic = np.array([2.0, 4.0, 8.0])
+            self.weight = np.array([2.0, 99.0, 4.0, 8.0, 99.0])
+            self.circuit = {"edges": np.array([0, 2, 3])}
+
+    parent = Brain()
+    parent.memory_u[:] = [0.1, -0.2, 0.3]
+    parent.memory_w[:] = [0.25, -0.5, 0.5]
+    seed = LearnedMemory.from_brain(parent)
+
+    child = Brain()
+    unrelated_before = child.weight[[1, 4]].copy()
+    seed.apply(child)
+
+    np.testing.assert_allclose(child.memory_u, [0.1, -0.2, 0.3])
+    np.testing.assert_allclose(child.memory_w, [0.25, -0.5, 0.5])
+    np.testing.assert_allclose(child.weight[[0, 2, 3]], [2.5, 2.0, 12.0])
+    np.testing.assert_allclose(child.weight[[1, 4]], unrelated_before)
+
+
+def test_memory_fingerprint_is_stable_and_sensitive():
+    a = LearnedMemory(np.array([1.0]), np.array([2.0]))
+    b = LearnedMemory(np.array([1.0]), np.array([2.0]))
+    c = LearnedMemory(np.array([1.0]), np.array([3.0]))
+    assert a.fingerprint() == b.fingerprint()
+    assert a.fingerprint() != c.fingerprint()
+
+def test_two_individual_cli_uses_one_elite(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run_evolution(**kwargs):
+        calls.append(kwargs)
+        return {
+            "fingerprint": "test",
+            "fitness": {"score": 0.0},
+            "genome": Genome().to_dict(),
+        }
+
+    monkeypatch.setattr(evolution_cli, "run_evolution", fake_run_evolution)
+    evolution_cli.main(
+        [
+            "--inheritance",
+            "both",
+            "--population",
+            "2",
+            "--generations",
+            "2",
+            "--steps",
+            "6",
+            "--out",
+            str(tmp_path),
+        ]
+    )
+
+    assert [call["inheritance"] for call in calls] == ["darwinian", "lamarckian"]
+    assert [call["elite_count"] for call in calls] == [1, 1]
+
+def _quote(bid="100", ask="100.1"):
+    return Quote(
+        "BTC-USDC", D(bid), D(ask), 1.0, D(".00000001"), D(".01"),
+        D(".01"), D("1"), D(".00000001"),
+    )
+
+
+def test_paper_account_uses_exact_decimal_fees():
+    account = PaperAccount(capital=100, order_usdc=10, fee_rate="0.006")
+    quote = _quote()
+    assert account.trade("BUY", quote)
+    assert account.cash == D("89.940")
+    assert account.position == D("10") / quote.ask
+    assert account.equity(quote) < D("100")
+    assert account.trade("SELL", quote)
+    assert account.position == D("0")
+    expected_sale = (D("10") / quote.ask) * quote.bid
+    assert account.cash == D("89.940") + expected_sale * D("0.994")
+    assert account.trade_count == 2
+
+
+def test_memory_copy_is_independent():
+    parent = LearnedMemory(np.array([1.0]), np.array([2.0]))
+    first = parent.copy()
+    second = parent.copy()
+    first.memory_u[0] = 9.0
+    first.memory_w[0] = 8.0
+    assert parent.memory_u[0] == 1.0
+    assert parent.memory_w[0] == 2.0
+    assert second.memory_u[0] == 1.0
+    assert second.memory_w[0] == 2.0
+    assert not np.shares_memory(first.memory_u, second.memory_u)
+    assert not np.shares_memory(first.memory_w, second.memory_w)
+
+
+def test_compiler_command_accepts_multiword_cxx(monkeypatch):
+    from stonkfly.neural.brain import compiler_command
+    monkeypatch.setenv("CXX", "zig c++")
+    assert compiler_command() == ["zig", "c++"]
+
+
+def test_same_seed_produces_same_initial_genomes(monkeypatch, tmp_path):
+    import stonkfly.evolution.experiment as experiment
+    populations = []
+
+    def fake_evaluate(individual: Individual, **kwargs):
+        populations[-1].append(individual.genome)
+        learned = LearnedMemory(np.zeros(1), np.zeros(1))
+        score = float(individual.genome.reward_current)
+        return ({
+            "genome": individual.genome.to_dict(),
+            "fingerprint": individual.genome.fingerprint(),
+            "fitness": {"score": score, "return_pct": 0.0, "max_drawdown_pct": 0.0, "trade_count": 0},
+            "memory_inherited": individual.inherited_memory is not None,
+        }, learned)
+
+    monkeypatch.setattr(experiment, "_evaluate_individual", fake_evaluate)
+    for name in ("first", "second"):
+        populations.append([])
+        experiment.run_evolution(
+            out=tmp_path / name, population_size=4, generations=1, steps=2,
+            elite_count=2, mutation_sigma=0.15, seed=77, product="BTC-USDC",
+            neural_ms=1, order_usdc=10, paper_fee=0.006, reward_deadband="0.01",
+        )
+    assert populations[0] == populations[1]
+
+
+def test_fitness_sorting_and_elite_preservation(monkeypatch, tmp_path):
+    import stonkfly.evolution.experiment as experiment
+    scores = iter([1.0, 3.0, 2.0, 0.0, 0.0, 0.0])
+
+    def fake_evaluate(individual: Individual, **kwargs):
+        learned = LearnedMemory(np.zeros(1), np.zeros(1))
+        score = next(scores)
+        return ({
+            "genome": individual.genome.to_dict(),
+            "fingerprint": individual.genome.fingerprint(),
+            "fitness": {"score": score, "return_pct": 0.0, "max_drawdown_pct": 0.0, "trade_count": 0},
+            "memory_inherited": individual.inherited_memory is not None,
+        }, learned)
+
+    monkeypatch.setattr(experiment, "_evaluate_individual", fake_evaluate)
+    out = tmp_path / "selection"
+    experiment.run_evolution(
+        out=out, population_size=3, generations=2, steps=2, elite_count=1,
+        mutation_sigma=0.15, seed=11, product="BTC-USDC", neural_ms=1,
+        order_usdc=10, paper_fee=0.006, reward_deadband="0.01",
+    )
+    first = json.loads((out / "generation-0000.json").read_text())["ranked"]
+    second = json.loads((out / "generation-0001.json").read_text())["ranked"]
+    assert [row["fitness"]["score"] for row in first] == [3.0, 2.0, 1.0]
+    assert second[0]["genome"] == first[0]["genome"]
+
+def test_inheritance_modes_reset_or_deep_copy_memory(monkeypatch, tmp_path):
+    import stonkfly.evolution.experiment as experiment
+    seen = {"darwinian": [], "lamarckian": []}
+    active_mode = None
+
+    def fake_evaluate(individual: Individual, **kwargs):
+        seen[active_mode].append(individual)
+        learned = LearnedMemory(np.array([1.0]), np.array([2.0]))
+        return ({
+            "genome": individual.genome.to_dict(),
+            "fingerprint": individual.genome.fingerprint(),
+            "fitness": {"score": 1.0, "return_pct": 0.0, "max_drawdown_pct": 0.0, "trade_count": 0},
+            "memory_inherited": individual.inherited_memory is not None,
+        }, learned)
+
+    monkeypatch.setattr(experiment, "_evaluate_individual", fake_evaluate)
+    for mode in seen:
+        active_mode = mode
+        experiment.run_evolution(
+            out=tmp_path / mode, population_size=2, generations=2, steps=2,
+            elite_count=1, mutation_sigma=0.15, seed=5, product="BTC-USDC",
+            neural_ms=1, order_usdc=10, paper_fee=0.006,
+            reward_deadband="0.01", inheritance=mode,
+        )
+
+    assert all(individual.inherited_memory is None for individual in seen["darwinian"])
+    inherited = [individual.inherited_memory for individual in seen["lamarckian"][2:]]
+    assert all(memory is not None for memory in inherited)
+    assert not np.shares_memory(inherited[0].memory_u, inherited[1].memory_u)
+    assert not np.shares_memory(inherited[0].memory_w, inherited[1].memory_w)
+
+
+def test_evolution_package_has_no_live_execution_imports():
+    import stonkfly.evolution.experiment as experiment
+
+    blocked = {"actions", "broker"}
+    for path in Path(experiment.__file__).parent.glob("*.py"):
+        tree = ast.parse(path.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                assert all(not alias.name.startswith("coinbase_agentkit") for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                assert not (node.level >= 2 and node.module in blocked)
+                assert not (node.module or "").startswith("coinbase_agentkit")
+
+
+
+def test_multiple_replays_are_shared_within_generation(monkeypatch, tmp_path):
+    import stonkfly.evolution.experiment as experiment
+
+    first = tmp_path / "first.jsonl"
+    second = tmp_path / "second.jsonl"
+    seen = []
+
+    def fake_recording_info(path):
+        return {
+            "format": "test",
+            "product": "BTC-USDC",
+            "observations": 3 if path == first else 4,
+            "sha256": path.stem,
+        }
+
+    def fake_evaluate(individual: Individual, **kwargs):
+        seen.append((kwargs["replay_path"], kwargs["steps"]))
+        learned = LearnedMemory(np.zeros(1), np.zeros(1))
+        return ({
+            "genome": individual.genome.to_dict(),
+            "fingerprint": individual.genome.fingerprint(),
+            "fitness": {
+                "score": 1.0,
+                "return_pct": 0.0,
+                "max_drawdown_pct": 0.0,
+                "trade_count": 0,
+            },
+            "memory_inherited": False,
+        }, learned)
+
+    monkeypatch.setattr(experiment, "recording_info", fake_recording_info)
+    monkeypatch.setattr(experiment, "_evaluate_individual", fake_evaluate)
+    out = tmp_path / "multi"
+    experiment.run_evolution(
+        out=out,
+        population_size=2,
+        generations=2,
+        steps=0,
+        elite_count=1,
+        mutation_sigma=0.15,
+        seed=9,
+        product="BTC-USDC",
+        neural_ms=1,
+        order_usdc=10,
+        paper_fee=0.006,
+        reward_deadband="0.01",
+        replay_paths=[first, second],
+    )
+
+    assert seen[0] == seen[1]
+    assert seen[2] == seen[3]
+    assert {seen[0], seen[2]} == {(first, 3), (second, 4)}
+    first_payload = json.loads((out / "generation-0000.json").read_text())
+    second_payload = json.loads((out / "generation-0001.json").read_text())
+    assert first_payload["market"]["path"] != second_payload["market"]["path"]
