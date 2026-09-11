@@ -165,6 +165,19 @@ python -m stonkfly.evolution.dataset \
 
 Use only `train.jsonl` for evolution. Keep `validation.jsonl` for model and parameter decisions, and keep `test.jsonl` untouched until the final decision. The split files carry only historical context preceding their own period.
 
+For training across independent periods, repeat `--replay`. The scheduler uses a separate seeded shuffle and gives every individual in one generation the exact same selected recording:
+
+```bash
+python -m stonkfly.evolution \
+  --population 4 \
+  --generations 100 \
+  --steps 0 \
+  --replay recordings/train-day-1.jsonl \
+  --replay recordings/train-day-2.jsonl \
+  --replay recordings/train-day-3.jsonl \
+  --out runs/multi-window-train
+```
+
 Validate a completed champion against at least three independent out-of-sample recordings:
 
 ```bash
