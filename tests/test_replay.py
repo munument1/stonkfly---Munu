@@ -111,9 +111,9 @@ def test_replay_rejects_nonincreasing_timestamps(tmp_path):
     _write_recording(path)
     rows = path.read_text().splitlines()
     payload = json.loads(rows[2])
-    payload["quote"]["timestamp"] = 10.0
+    payload["quote"]["timestamp"] = 9.0
     rows[2] = json.dumps(payload)
     path.write_text("\n".join(rows) + "\n")
-    with pytest.raises(ValueError, match="timestamps"):
+    with pytest.raises(ValueError, match="timestamps must not decrease"):
         load_recording(path)
 

@@ -65,8 +65,8 @@ def load_recording(path: Path):
         quote = _decode_quote(row["quote"])
         if quote.product != product:
             raise ValueError("recording contains a different product")
-        if previous_timestamp is not None and quote.timestamp <= previous_timestamp:
-            raise ValueError("recording timestamps must increase")
+        if previous_timestamp is not None and quote.timestamp < previous_timestamp:
+            raise ValueError("recording timestamps must not decrease")
         previous_timestamp = quote.timestamp
         quotes.append(quote)
     return {**header, "initial_history": history}, quotes
